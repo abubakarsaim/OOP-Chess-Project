@@ -121,3 +121,74 @@ public:
                board[toR][toC]->getColor()!=color;
     }
 };
+
+
+class Bishop : public Piece
+{
+public:
+    Bishop(Color c) : Piece(c, BISHOP) {}
+
+    bool isValidMove(int fromR, int fromC,
+                     int toR,   int toC,
+                     Piece* board[8][8]) const override
+    {
+        int dr = abs(toR - fromR);
+        int dc = abs(toC - fromC);
+        if (dr != dc || dr == 0) return false;
+
+        int sR = (toR>fromR)?1:-1, sC = (toC>fromC)?1:-1;
+        int r = fromR+sR, c = fromC+sC;
+        while (r != toR || c != toC)
+        {
+            if (board[r][c]) return false;
+            r+=sR; c+=sC;
+        }
+        return board[toR][toC]==nullptr ||
+               board[toR][toC]->getColor()!=color;
+    }
+};
+
+class Queen : public Piece
+{
+public:
+    Queen(Color c) : Piece(c, QUEEN) {}
+
+    bool isValidMove(int fromR, int fromC,
+                     int toR,   int toC,
+                     Piece* board[8][8]) const override
+    {
+        int dr = abs(toR-fromR), dc = abs(toC-fromC);
+        bool straight = (fromR==toR || fromC==toC);
+        bool diagonal = (dr==dc && dr>0);
+        if (!straight && !diagonal) return false;
+
+        int sR = (toR==fromR)?0:(toR>fromR?1:-1);
+        int sC = (toC==fromC)?0:(toC>fromC?1:-1);
+        int r = fromR+sR, c = fromC+sC;
+        while (r!=toR || c!=toC)
+        {
+            if (board[r][c]) return false;
+            r+=sR; c+=sC;
+        }
+        return board[toR][toC]==nullptr ||
+               board[toR][toC]->getColor()!=color;
+    }
+};
+
+class King : public Piece
+{
+public:
+    King(Color c) : Piece(c, KING) {}
+
+    bool isValidMove(int fromR, int fromC,
+                     int toR,   int toC,
+                     Piece* board[8][8]) const override
+    {
+        int dr = abs(toR-fromR), dc = abs(toC-fromC);
+        // One step in any direction only
+        if (dr <= 1 && dc <= 1 && (dr+dc > 0))
+            return board[toR][toC]==nullptr ||
+                   board[toR][toC]->getColor()!=color;
+        return false;
+    }
+};
