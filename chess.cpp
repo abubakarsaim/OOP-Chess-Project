@@ -384,3 +384,276 @@ class Board
     }
 
 };
+
+struct MoveRecord
+{
+    int    fromR, fromC, toR, toC;
+
+    Piece* capturedPiece;   
+    bool   captureWasDeleted; 
+
+    bool   wasEnPassant;
+    int    capturedEpRow;   // row of the pawn removed by en-passant
+    int    capturedEpCol;   // col of the pawn removed by en-passant
+
+    bool   wasCastle;
+    bool   wasPromotion;
+    bool   pieceHadMoved;   // hasMoved flag of the moved piece before move
+    bool   rookHadMoved;    // hasMoved flag of the rook before castling
+    int    prevEpCol;       // enPassantCol before this move
+    int    prevEpRow;       // enPassantRow before this move
+};
+
+
+void executeMove(int fR,int fC,int tR,int tC)
+    {
+        Piece* moving=grid[fR][fC];
+
+        // FIX 4: Detect castle BEFORE we clear enPassantCol,
+        // so detection is always based on the correct board state.
+        bool castle=isCastlingMove(fR,fC,tR,tC);
+        bool ep    =isEnPassantMove(fR,fC,tR,tC);
+
+        // Build undo record
+        MoveRecord rec;
+        rec.fromR          =fR; rec.fromC=fC;
+        rec.toR            =tR; rec.toC  =tC;
+        rec.wasEnPassant   =ep;
+        rec.wasCastle      =castle;
+        rec.wasPromotion   =false;
+        rec.pieceHadMoved  =moving->getHasMoved();
+        rec.rookHadMoved   =false;
+        rec.prevEpCol      =enPassantCol;
+        rec.prevEpRow      =enPassantRow;
+        rec.capturedEpRow  =-1;
+        rec.capturedEpCol  =-1;
+        rec.capturedPiece  =nullptr;
+        rec.captureWasDeleted=false;
+
+        if(ep)
+        {
+            // FIX 1: Save actual coordinates of the captured pawn
+            rec.capturedEpRow =enPassantRow;
+            rec.capturedEpCol =enPassantCol;
+            rec.capturedPiece =grid[enPassantRow][enPassantCol];
+            // Remove from board but DO NOT delete - stored in record
+            grid[enPassantRow][enPassantCol]=nullptr;
+        }
+        else
+        {
+            // FIX 2: Save the captured piece without deleting it
+            rec.capturedPiece=grid[tR][tC];
+            // Remove from board but DO NOT delete yet
+            grid[tR][tC]=nullptr;
+        }
+
+        // Update en-passant state
+        enPassantCol=enPassantRow=-1;
+        if(moving->getType()==PAWN && abs(tR-fR)==2)
+        {
+            enPassantCol=tC;
+            enPassantRow=tR; // row where the pawn landed
+        }
+
+        // Move the rook for castling
+        if(castle)
+        {
+            int dc=tC-fC;
+            int rFrom=(dc==2)?7:0;
+            int rTo  =(dc==2)?5:3;
+            Piece* rook=grid[fR][rFrom];
+            rec.rookHadMoved=rook->getHasMoved();
+            grid[fR][rTo]  =rook;
+            grid[fR][rFrom]=nullptr;
+            rook->setHasMoved(true);
+        }
+
+        // Move the piece
+        grid[tR][tC]  =moving;
+        grid[fR][fC]  =nullptr;
+        moving->setHasMoved(true);
+
+        // Pawn promotion
+        if(moving->getType()==PAWN&&(tR==0||tR==7))
+        {
+            rec.wasPromotion  =true;
+            awaitingPromotion =true;
+            promoRow=tR; promoCol=tC;
+            promoColor=moving->getColor();
+        }
+
+        // Before saving, free any old captured piece sitting in this slot
+        if(historySize<MAX_HISTORY)
+        {
+            // If this slot was used before and had a piece, free it now
+            // (only relevant if we somehow wrap around - safety measure)
+            history[historySize]=rec;
+            historySize++;
+        }
+        else
+        {
+            // History full - free oldest captured piece to avoid leak
+            if(history[0].capturedPiece)
+                delete history[0].capturedPiece;
+            // Shift history down by one
+            for(int i=0;i<MAX_HISTORY-1;i++)
+                history[i]=history[i+1];
+            history[MAX_HISTORY-1]=rec;
+        }
+    }
+
+    // --------------------------------------------------------
+    //  promoteAndPlace - swap pawn for chosen piece
+    // --------------------------------------------------------
+    void promoteAndPlace(PromotionChoice choice)
+    {
+        if(!awaitingPromotion) return;
+
+        // The pawn on promoRow,promoCol belongs to us now
+        // We recorded it in history as the moving piece - delete it
+        delete grid[promoRow][promoCol];
+
+        Piece* np=nullptr;
+        switch(choice)
+        {
+            case PROMO_QUEEN:  np=new Queen (promoColor); break;
+            case PROMO_ROOK:   np=new Rook  (promoColor); break;
+            case PROMO_BISHOP: np=new Bishop(promoColor); break;
+            case PROMO_KNIGHT: np=new Knight(promoColor); break;
+            default:           np=new Queen (promoColor); break;
+        }
+        np->setHasMoved(true);
+        grid[promoRow][promoCol]=np;
+
+        // Mark the last history record with the promoted type
+        // so undo knows to replace with a pawn
+        if(historySize>0)
+            history[historySize-1].wasPromotion=true;
+
+        awaitingPromotion=false;
+
+        currentTurn=(currentTurn==WHITE)?BLACK:WHITE;
+        isCheck    =kingInCheck(currentTurn);
+        if(!hasLegalMoves(currentTurn))
+        {
+            gameOver   =true;
+            isCheckmate=isCheck;
+            isStalemate=!isCheck;
+        }
+    }
+
+    // --------------------------------------------------------
+    //  undoLastMove
+    //
+    //  FIX 3: gameOver guard removed so player can undo after
+    //  checkmate or stalemate.
+    // --------------------------------------------------------
+    void undoLastMove()
+    {
+        if(historySize==0) return;  // nothing to undo
+
+        MoveRecord& rec=history[--historySize];
+
+        // If promotion: the queen/rook/etc on the square is NOT the
+        // original pawn. Delete the promoted piece and put pawn back.
+        if(rec.wasPromotion)
+        {
+            Color c=grid[rec.toR][rec.toC]->getColor();
+            delete grid[rec.toR][rec.toC];
+            grid[rec.toR][rec.toC]=nullptr;
+
+            // Place original pawn back
+            Piece* pawn=new Pawn(c);
+            pawn->setHasMoved(rec.pieceHadMoved);
+            grid[rec.fromR][rec.fromC]=pawn;
+        }
+        else
+        {
+            // Move piece back to its origin
+            Piece* moving=grid[rec.toR][rec.toC];
+            moving->setHasMoved(rec.pieceHadMoved);
+            grid[rec.fromR][rec.fromC]=moving;
+            grid[rec.toR  ][rec.toC  ]=nullptr;
+        }
+
+        // FIX 2: Restore normal captured piece (was never deleted)
+        if(!rec.wasEnPassant && rec.capturedPiece)
+            grid[rec.toR][rec.toC]=rec.capturedPiece;
+
+        // FIX 1: Restore en-passant captured pawn at its real location
+        if(rec.wasEnPassant && rec.capturedPiece)
+        {
+            grid[rec.capturedEpRow][rec.capturedEpCol]=rec.capturedPiece;
+        }
+
+        // Restore castling rook
+        if(rec.wasCastle)
+        {
+            int dc       =rec.toC-rec.fromC;
+            int rookCurC =(dc==2)?5:3;
+            int rookOrigC=(dc==2)?7:0;
+            Piece* rook  =grid[rec.fromR][rookCurC];
+            if(rook) rook->setHasMoved(rec.rookHadMoved);
+            grid[rec.fromR][rookOrigC]=rook;
+            grid[rec.fromR][rookCurC ]=nullptr;
+        }
+
+        // Restore en-passant tracking variables
+        enPassantCol=rec.prevEpCol;
+        enPassantRow=rec.prevEpRow;
+
+        // Flip turn back and recalculate check state
+        currentTurn =(currentTurn==WHITE)?BLACK:WHITE;
+        isCheck     =kingInCheck(currentTurn);
+        gameOver    =false;
+        isCheckmate =false;
+        isStalemate =false;
+        pieceSelected=false;
+    }
+
+    // --------------------------------------------------------
+    //  Free all captured pieces stored in history (for destructor)
+    // --------------------------------------------------------
+    void freeHistory()
+    {
+        for(int i=0;i<historySize;i++)
+            if(history[i].capturedPiece)
+            {
+                delete history[i].capturedPiece;
+                history[i].capturedPiece=nullptr;
+            }
+        historySize=0;
+    }
+
+    //  handlePromoClick
+    // --------------------------------------------------------
+    void handlePromoClick(int px,int py)
+    {
+        if(!awaitingPromotion) return;
+        int dX=(8*SQ-4*SQ)/2;
+        int dY=(8*SQ-(SQ+40))/2;
+        if(py<dY+33||py>dY+33+SQ-4) return;
+        if(px<dX   ||px>dX+4*SQ   ) return;
+        int idx=(px-dX)/SQ;
+        PromotionChoice ch[4]={PROMO_QUEEN,PROMO_ROOK,
+                                PROMO_BISHOP,PROMO_KNIGHT};
+        if(idx>=0&&idx<4) promoteAndPlace(ch[idx]);
+    }
+
+    void handleUndoKey() { undoLastMove(); 
+    }
+
+    ~Board()
+    {
+        // Free pieces still on the board
+        for(int r=0;r<8;r++)
+            for(int c=0;c<8;c++)
+                delete grid[r][c];
+
+        // Free any captured pieces stored in undo history
+        freeHistory();
+    }
+
+    
+
+
