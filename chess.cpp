@@ -192,9 +192,39 @@ public:
     }
 };
 
+// ============================================================
+//  SECTION 4 - MOVE RECORD (for Undo)
+// ============================================================
+
+struct MoveRecord
+{
+    int    fromR, fromC, toR, toC;
+
+    Piece* capturedPiece;   
+    bool   captureWasDeleted; 
+
+    bool   wasEnPassant;
+    int    capturedEpRow;   // row of the pawn removed by en-passant
+    int    capturedEpCol;   // col of the pawn removed by en-passant
+
+    bool   wasCastle;
+    bool   wasPromotion;
+    bool   pieceHadMoved;   // hasMoved flag of the moved piece before move
+    bool   rookHadMoved;    // hasMoved flag of the rook before castling
+    int    prevEpCol;       // enPassantCol before this move
+    int    prevEpRow;       // enPassantRow before this move
+};
+
+// ============================================================
+//  SECTION 5 - BOARD CLASS
+// ============================================================
+
 class Board
 {
     Piece* grid[8][8];
+
+    sf::Texture textures[2][6];
+    sf::Sprite  sprites [2][6];
 
     int   enPassantCol;   // col of pawn that just moved 2 squares (-1=none)
     int   enPassantRow;   // row of that pawn
@@ -203,6 +233,53 @@ class Board
     bool  pieceSelected;
     int   selectedRow, selectedCol;
 
+    bool  gameOver, isCheck, isCheckmate, isStalemate;
+
+    static const int MAX_HISTORY = 200;
+    MoveRecord history[MAX_HISTORY];
+    int        historySize;
+
+    bool  awaitingPromotion;
+    int   promoRow, promoCol;
+    Color promoColor;
+
+    static const int SQ = 80;
+
+    // --------------------------------------------------------
+    void initBoard()
+    {
+        grid[0][0]=new Rook(BLACK);   grid[0][1]=new Knight(BLACK);
+        grid[0][2]=new Bishop(BLACK); grid[0][3]=new Queen(BLACK);
+        grid[0][4]=new King(BLACK);   grid[0][5]=new Bishop(BLACK);
+        grid[0][6]=new Knight(BLACK); grid[0][7]=new Rook(BLACK);
+        for(int c=0;c<8;c++) grid[1][c]=new Pawn(BLACK);
+        for(int c=0;c<8;c++) grid[6][c]=new Pawn(WHITE);
+        grid[7][0]=new Rook(WHITE);   grid[7][1]=new Knight(WHITE);
+        grid[7][2]=new Bishop(WHITE); grid[7][3]=new Queen(WHITE);
+        grid[7][4]=new King(WHITE);   grid[7][5]=new Bishop(WHITE);
+        grid[7][6]=new Knight(WHITE); grid[7][7]=new Rook(WHITE);
+    }
+
+    void loadTextures()
+    {
+        const char* piece_names[6] = {"pawn","rook","knight","bishop","queen","king"};
+        for(int col=0;col<2;col++)
+            for(int t=0;t<6;t++)
+            {
+                char fn[64];
+                if(col==0)
+                    sprintf(fn,"photos/%s.png",piece_names[t]);
+                else
+                    sprintf(fn,"photos/%s1.png",piece_names[t]);
+                if(textures[col][t].loadFromFile(fn))
+                {
+                    sprites[col][t].setTexture(textures[col][t]);
+                    sf::Vector2u sz=textures[col][t].getSize();
+                    sprites[col][t].setScale((float)(SQ-8)/sz.x,
+                                             (float)(SQ-8)/sz.y);
+                }
+            }
+    }
 
     void findKing(Color c, int &row, int &col) const
     {
@@ -282,7 +359,7 @@ class Board
     }
 
     // --------------------------------------------------------
-    //  En-passant
+    //  En-passant 
     // --------------------------------------------------------
     bool isEnPassantMove(int fR,int fC,int tR,int tC) const
     {
@@ -383,34 +460,14 @@ class Board
         return false;
     }
 
-};
-
-struct MoveRecord
-{
-    int    fromR, fromC, toR, toC;
-
-    Piece* capturedPiece;   
-    bool   captureWasDeleted; 
-
-    bool   wasEnPassant;
-    int    capturedEpRow;   // row of the pawn removed by en-passant
-    int    capturedEpCol;   // col of the pawn removed by en-passant
-
-    bool   wasCastle;
-    bool   wasPromotion;
-    bool   pieceHadMoved;   // hasMoved flag of the moved piece before move
-    bool   rookHadMoved;    // hasMoved flag of the rook before castling
-    int    prevEpCol;       // enPassantCol before this move
-    int    prevEpRow;       // enPassantRow before this move
-};
-
-
-void executeMove(int fR,int fC,int tR,int tC)
+    // --------------------------------------------------------
+    //  executeMove
+    // --------------------------------------------------------
+    void executeMove(int fR,int fC,int tR,int tC)
     {
         Piece* moving=grid[fR][fC];
 
-        // FIX 4: Detect castle BEFORE we clear enPassantCol,
-        // so detection is always based on the correct board state.
+        
         bool castle=isCastlingMove(fR,fC,tR,tC);
         bool ep    =isEnPassantMove(fR,fC,tR,tC);
 
@@ -432,7 +489,7 @@ void executeMove(int fR,int fC,int tR,int tC)
 
         if(ep)
         {
-            // FIX 1: Save actual coordinates of the captured pawn
+            //Save actual coordinates of the captured pawn
             rec.capturedEpRow =enPassantRow;
             rec.capturedEpCol =enPassantCol;
             rec.capturedPiece =grid[enPassantRow][enPassantCol];
@@ -441,7 +498,7 @@ void executeMove(int fR,int fC,int tR,int tC)
         }
         else
         {
-            // FIX 2: Save the captured piece without deleting it
+            //Save the captured piece without deleting it
             rec.capturedPiece=grid[tR][tC];
             // Remove from board but DO NOT delete yet
             grid[tR][tC]=nullptr;
@@ -545,7 +602,7 @@ void executeMove(int fR,int fC,int tR,int tC)
     // --------------------------------------------------------
     //  undoLastMove
     //
-    //  FIX 3: gameOver guard removed so player can undo after
+    //  gameOver guard removed so player can undo after
     //  checkmate or stalemate.
     // --------------------------------------------------------
     void undoLastMove()
@@ -576,11 +633,11 @@ void executeMove(int fR,int fC,int tR,int tC)
             grid[rec.toR  ][rec.toC  ]=nullptr;
         }
 
-        // FIX 2: Restore normal captured piece (was never deleted)
+        // Restore normal captured piece (was never deleted)
         if(!rec.wasEnPassant && rec.capturedPiece)
             grid[rec.toR][rec.toC]=rec.capturedPiece;
 
-        // FIX 1: Restore en-passant captured pawn at its real location
+        // Restore en-passant captured pawn at its real location
         if(rec.wasEnPassant && rec.capturedPiece)
         {
             grid[rec.capturedEpRow][rec.capturedEpCol]=rec.capturedPiece;
@@ -625,6 +682,159 @@ void executeMove(int fR,int fC,int tR,int tC)
         historySize=0;
     }
 
+    // --------------------------------------------------------
+    //  Drawing helpers
+    // --------------------------------------------------------
+    void drawHighlights(sf::RenderWindow& win) const
+    {
+        if(!pieceSelected) return;
+
+        sf::RectangleShape sq(sf::Vector2f(SQ,SQ));
+        sq.setFillColor(sf::Color(100,200,100,160));
+        sq.setPosition(selectedCol*SQ,selectedRow*SQ);
+        win.draw(sq);
+
+        sf::CircleShape dot(12.f);
+        dot.setFillColor(sf::Color(50,150,50,180));
+        for(int r=0;r<8;r++)
+            for(int c=0;c<8;c++)
+                if(const_cast<Board*>(this)->isLegalMove(
+                       selectedRow,selectedCol,r,c))
+                {
+                    dot.setPosition(c*SQ+SQ/2.f-12.f,
+                                    r*SQ+SQ/2.f-12.f);
+                    win.draw(dot);
+                }
+    }
+
+    void drawPromoDialog(sf::RenderWindow& win, sf::Font& font) const
+    {
+        int dW=4*SQ, dH=SQ+40;
+        int dX=(8*SQ-dW)/2, dY=(8*SQ-dH)/2;
+
+        sf::RectangleShape bg(sf::Vector2f(dW,dH));
+        bg.setFillColor(sf::Color(30,30,30,235));
+        bg.setPosition(dX,dY);
+        win.draw(bg);
+
+        sf::Text title;
+        title.setFont(font);
+        title.setString("Choose promotion piece:");
+        title.setCharacterSize(17);
+        title.setFillColor(sf::Color::White);
+        title.setPosition(dX+8,dY+6);
+        win.draw(title);
+
+        const char* lbl[4]={"Queen","Rook","Bishop","Knight"};
+        for(int i=0;i<4;i++)
+        {
+            sf::RectangleShape btn(sf::Vector2f(SQ-4,SQ-4));
+            btn.setFillColor(sf::Color(70,90,200));
+            btn.setPosition(dX+i*SQ+2,dY+33);
+            win.draw(btn);
+
+            sf::Text t;
+            t.setFont(font);
+            t.setString(lbl[i]);
+            t.setCharacterSize(13);
+            t.setFillColor(sf::Color::White);
+            t.setPosition(dX+i*SQ+5,dY+40);
+            win.draw(t);
+        }
+    }
+
+public:
+    // --------------------------------------------------------
+    //  Constructor
+    // --------------------------------------------------------
+    Board()
+    {
+        for(int r=0;r<8;r++)
+            for(int c=0;c<8;c++)
+                grid[r][c]=nullptr;
+
+        enPassantCol=enPassantRow=-1;
+        currentTurn =WHITE;
+        pieceSelected=false;
+        selectedRow=selectedCol=-1;
+        gameOver=isCheck=isCheckmate=isStalemate=false;
+        historySize=0;
+        awaitingPromotion=false;
+        promoRow=promoCol=0;
+        promoColor=WHITE;
+
+        // Zero out history captured pointers for safety
+        for(int i=0;i<MAX_HISTORY;i++)
+            history[i].capturedPiece=nullptr;
+
+        loadTextures();
+        initBoard();
+    }
+
+    // --------------------------------------------------------
+    //  Destructor - free grid AND any pieces still in history
+    // --------------------------------------------------------
+    ~Board()
+    {
+        // Free pieces still on the board
+        for(int r=0;r<8;r++)
+            for(int c=0;c<8;c++)
+                delete grid[r][c];
+
+        // Free any captured pieces stored in undo history
+        freeHistory();
+    }
+
+    // --------------------------------------------------------
+    //  handleClick
+    // --------------------------------------------------------
+    void handleClick(int px,int py)
+    {
+        if(gameOver||awaitingPromotion) return;
+
+        int col=px/SQ, row=py/SQ;
+        if(!Piece::inBounds(row,col)) return;
+
+        if(pieceSelected)
+        {
+            if(row==selectedRow&&col==selectedCol)
+            { pieceSelected=false; return; }
+
+            if(isLegalMove(selectedRow,selectedCol,row,col))
+            {
+                executeMove(selectedRow,selectedCol,row,col);
+                pieceSelected=false;
+
+                if(!awaitingPromotion)
+                {
+                    currentTurn=(currentTurn==WHITE)?BLACK:WHITE;
+                    isCheck    =kingInCheck(currentTurn);
+                    if(!hasLegalMoves(currentTurn))
+                    {
+                        gameOver   =true;
+                        isCheckmate=isCheck;
+                        isStalemate=!isCheck;
+                    }
+                }
+                return;
+            }
+
+            if(grid[row][col]&&grid[row][col]->getColor()==currentTurn)
+            { selectedRow=row; selectedCol=col; return; }
+
+            pieceSelected=false;
+            return;
+        }
+
+        if(grid[row][col]&&grid[row][col]->getColor()==currentTurn)
+        {
+            pieceSelected=true;
+            selectedRow  =row;
+            selectedCol  =col;
+        }
+    }
+
+    // --------------------------------------------------------
     //  handlePromoClick
     // --------------------------------------------------------
     void handlePromoClick(int px,int py)
@@ -640,20 +850,197 @@ void executeMove(int fR,int fC,int tR,int tC)
         if(idx>=0&&idx<4) promoteAndPlace(ch[idx]);
     }
 
-    void handleUndoKey() { undoLastMove(); 
-    }
+    void handleUndoKey() { undoLastMove(); }
 
-    ~Board()
+    // --------------------------------------------------------
+    //  draw
+    // --------------------------------------------------------
+    void draw(sf::RenderWindow& win, sf::Font& font)
     {
-        // Free pieces still on the board
+        static const sf::Color LIGHT(240,217,181);
+        static const sf::Color DARK (181,136, 99);
+        static const sf::Color CHK  (220, 50, 50,180);
+
+        // 1. Board squares
+        sf::RectangleShape sq(sf::Vector2f(SQ,SQ));
         for(int r=0;r<8;r++)
             for(int c=0;c<8;c++)
-                delete grid[r][c];
+            {
+                sq.setFillColor((r+c)%2==0?LIGHT:DARK);
+                sq.setPosition(c*SQ,r*SQ);
+                win.draw(sq);
+            }
 
-        // Free any captured pieces stored in undo history
-        freeHistory();
+        // 2. King in check - red highlight
+        if(isCheck)
+        {
+            int kr,kc; findKing(currentTurn,kr,kc);
+            sq.setFillColor(CHK);
+            sq.setPosition(kc*SQ,kr*SQ);
+            win.draw(sq);
+        }
+
+        // 3. Selection and move dots
+        drawHighlights(win);
+
+        // 4. Rank / file labels
+        sf::Text lbl;
+        lbl.setFont(font); lbl.setCharacterSize(12);
+        for(int i=0;i<8;i++)
+        {
+            char rankCh[2]={(char)('8'-i),'\0'};
+            lbl.setString(rankCh);
+            lbl.setFillColor(i%2==0?DARK:LIGHT);
+            lbl.setPosition(2,i*SQ+2);
+            win.draw(lbl);
+
+            char fileCh[2]={(char)('a'+i),'\0'};
+            lbl.setString(fileCh);
+            lbl.setFillColor(i%2==0?LIGHT:DARK);
+            lbl.setPosition(i*SQ+SQ-14,8*SQ-16);
+            win.draw(lbl);
+        }
+
+        // 5. Pieces
+        for(int r=0;r<8;r++)
+            for(int c=0;c<8;c++)
+            {
+                Piece* p=grid[r][c];
+                if(!p) continue;
+                int ci=(p->getColor()==WHITE)?0:1;
+                int ti=(int)p->getType();
+
+                if(textures[ci][ti].getSize().x>0)
+                {
+                    sprites[ci][ti].setPosition(c*SQ+4.f,r*SQ+4.f);
+                    win.draw(sprites[ci][ti]);
+                }
+                else
+                {
+                    sf::RectangleShape fb(sf::Vector2f(SQ-10,SQ-10));
+                    fb.setFillColor(ci==0?sf::Color(255,255,255,210)
+                                        :sf::Color(40,40,40,210));
+                    fb.setOutlineColor(sf::Color::Black);
+                    fb.setOutlineThickness(2);
+                    fb.setPosition(c*SQ+5,r*SQ+5);
+                    win.draw(fb);
+
+                    const char* tl[6]={"P","R","N","B","Q","K"};
+                    sf::Text tlt;
+                    tlt.setFont(font);
+                    tlt.setString(tl[ti]);
+                    tlt.setCharacterSize(30);
+                    tlt.setFillColor(ci==0?sf::Color::Black:sf::Color::White);
+                    tlt.setPosition(c*SQ+22,r*SQ+16);
+                    win.draw(tlt);
+                }
+            }
+
+        // 6. Status bar
+        sf::RectangleShape bar(sf::Vector2f(8*SQ,40));
+        bar.setFillColor(sf::Color(20,20,20));
+        bar.setPosition(0,8*SQ);
+        win.draw(bar);
+
+        sf::Text st;
+        st.setFont(font);
+        st.setCharacterSize(18);
+        st.setFillColor(sf::Color::White);
+        char msg[90];
+
+        if(isCheckmate)
+        {
+            sprintf(msg,"Checkmate! %s wins!  U=Undo  R=Restart",
+                    currentTurn==WHITE?"Black":"White");
+            st.setFillColor(sf::Color(255,180,50));
+        }
+        else if(isStalemate)
+        {
+            sprintf(msg,"Stalemate - Draw!  U=Undo  R=Restart");
+            st.setFillColor(sf::Color(180,180,255));
+        }
+        else if(isCheck)
+        {
+            sprintf(msg,"%s is in CHECK!  U=Undo  R=Restart",
+                    currentTurn==WHITE?"White":"Black");
+            st.setFillColor(sf::Color(255,100,100));
+        }
+        else
+        {
+            sprintf(msg,"%s's turn   U=Undo  R=Restart",
+                    currentTurn==WHITE?"White":"Black");
+        }
+        st.setString(msg);
+        st.setPosition(8,8*SQ+10);
+        win.draw(st);
+
+        // 7. Promotion dialog
+        if(awaitingPromotion)
+            drawPromoDialog(win,font);
     }
 
-    
+    bool isGameOver()  const { return gameOver;          }
+    bool needsPromo()  const { return awaitingPromotion; }
+};
 
+// ============================================================
+//  SECTION 6 - main()
+// ============================================================
 
+int main()
+{
+    const int BOARD_PX=640;
+    const int WIN_H   =680;
+
+    sf::RenderWindow window(
+        sf::VideoMode(BOARD_PX,WIN_H),
+        "Chess - SFML 2.6  (U=Undo  R=Restart  Esc=Quit)",
+        sf::Style::Titlebar|sf::Style::Close);
+    window.setFramerateLimit(60);
+
+    sf::Font font;
+    if(!font.loadFromFile("assets/font.ttf"))
+    if(!font.loadFromFile("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+    if(!font.loadFromFile("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"))
+        font.loadFromFile("C:/Windows/Fonts/arial.ttf");
+
+    Board* board=new Board();
+
+    while(window.isOpen())
+    {
+        sf::Event ev;
+        while(window.pollEvent(ev))
+        {
+            if(ev.type==sf::Event::Closed)
+                window.close();
+
+            if(ev.type==sf::Event::KeyPressed)
+            {
+                if(ev.key.code==sf::Keyboard::Escape)
+                    window.close();
+                if(ev.key.code==sf::Keyboard::U)
+                    board->handleUndoKey();
+                if(ev.key.code==sf::Keyboard::R)
+                { delete board; board=new Board(); }
+            }
+
+            if(ev.type==sf::Event::MouseButtonPressed&&
+               ev.mouseButton.button==sf::Mouse::Left)
+            {
+                int mx=ev.mouseButton.x;
+                int my=ev.mouseButton.y;
+                if(board->needsPromo())
+                    board->handlePromoClick(mx,my);
+                else
+                    board->handleClick(mx,my);
+            }
+        }
+
+        window.clear(sf::Color(15,15,15));
+        board->draw(window,font);
+        window.display();
+    }
+
+    delete board;
+    return 0;
+}
